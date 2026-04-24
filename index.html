@@ -431,7 +431,6 @@
       font-weight: 700;
     }
 
-    /* 投稿済み日は、点ではなく「淡い囲い」で示す */
     .calendar-day.has-post {
       border-color: var(--post-mark-strong);
       box-shadow: inset 0 0 0 2px var(--post-mark);
@@ -546,17 +545,43 @@
       white-space: nowrap;
     }
 
+    .storage-status {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .storage-status div + div {
+      margin-top: 4px;
+    }
+
+    .storage-status strong {
+      color: var(--text);
+      font-weight: 700;
+    }
+
     .backup-actions {
       display: flex;
       flex-direction: column;
       gap: 8px;
     }
 
+    .backup-separator {
+      height: 1px;
+      background: var(--line);
+      margin: 8px 0;
+    }
+
     .file-input {
       display: none;
     }
 
-    .modal-backdrop {
+    .modal-backdrop,
+    .confirm-backdrop {
       position: fixed;
       inset: 0;
       z-index: 100;
@@ -567,7 +592,12 @@
       padding: 20px;
     }
 
-    .modal-backdrop.is-open {
+    .confirm-backdrop {
+      z-index: 300;
+    }
+
+    .modal-backdrop.is-open,
+    .confirm-backdrop.is-open {
       display: flex;
     }
 
@@ -644,11 +674,49 @@
       padding: 0 22px 22px;
     }
 
+    .confirm-box {
+      width: min(420px, 100%);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+      padding: 22px;
+    }
+
+    .confirm-box h2 {
+      margin: 0 0 12px;
+      font-size: 1.2rem;
+    }
+
+    .confirm-box p {
+      margin: 0 0 16px;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+
+    .confirm-input {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 12px;
+      padding: 11px 12px;
+      color: var(--text);
+      outline: none;
+      margin-bottom: 16px;
+    }
+
+    .confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
     .toast {
       position: fixed;
       right: 18px;
       bottom: 18px;
-      z-index: 200;
+      z-index: 400;
       background: #2f2a25;
       color: #fff;
       padding: 10px 14px;
@@ -826,13 +894,31 @@
       </section>
 
       <section class="side-box">
-        <h2>バックアップ</h2>
+        <h2>データ保存</h2>
+
+        <div class="storage-status">
+          <div>保存先：<strong id="storageFileName">ブラウザ内保存</strong></div>
+          <div>状態：<strong id="storageState">保存済み</strong></div>
+          <div id="fileApiMessage"></div>
+        </div>
+
         <div class="backup-actions">
+          <button class="btn" id="openDataFileButton" type="button">日記ファイルを開く</button>
+          <button class="btn" id="saveAsDataFileButton" type="button">名前を付けて保存</button>
+          <button class="btn" id="saveCurrentFileButton" type="button">上書き保存</button>
+
+          <div class="backup-separator"></div>
+
           <button class="btn" id="exportJsonButton" type="button">JSONエクスポート</button>
           <button class="btn" id="importJsonButton" type="button">JSONインポート</button>
           <button class="btn" id="exportTextButton" type="button">テキスト書き出し</button>
           <input class="file-input" type="file" id="importFileInput" accept="application/json,.json" />
         </div>
+
+        <p class="side-note">
+          ファイルを開く／名前を付けて保存を使うと、日記データをJSONファイルとしてPCに保存できます。
+          ファイル未選択時は従来どおりブラウザ内に保存されます。
+        </p>
       </section>
     </aside>
   </div>
@@ -879,6 +965,25 @@
     </div>
   </div>
 
+  <div class="confirm-backdrop" id="confirmBackdrop" aria-hidden="true">
+    <div class="confirm-box" role="dialog" aria-modal="true">
+      <h2 id="confirmTitle">確認</h2>
+      <p id="confirmMessage"></p>
+
+      <input
+        class="confirm-input"
+        id="confirmInput"
+        type="text"
+        style="display: none;"
+      />
+
+      <div class="confirm-actions">
+        <button class="btn" id="confirmCancelButton" type="button">キャンセル</button>
+        <button class="btn btn-primary" id="confirmOkButton" type="button">OK</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
@@ -893,6 +998,10 @@
     let posts = [];
     let categories = [DEFAULT_CATEGORY];
     let editingId = null;
+
+    let dataFileHandle = null;
+    let dataFileName = "";
+    let isWritingFile = false;
 
     const filterState = {
       search: "",
@@ -941,95 +1050,152 @@
 
     const archiveList = document.getElementById("archiveList");
 
+    const openDataFileButton = document.getElementById("openDataFileButton");
+    const saveAsDataFileButton = document.getElementById("saveAsDataFileButton");
+    const saveCurrentFileButton = document.getElementById("saveCurrentFileButton");
+    const storageFileName = document.getElementById("storageFileName");
+    const storageState = document.getElementById("storageState");
+    const fileApiMessage = document.getElementById("fileApiMessage");
+
     const exportJsonButton = document.getElementById("exportJsonButton");
     const importJsonButton = document.getElementById("importJsonButton");
     const importFileInput = document.getElementById("importFileInput");
     const exportTextButton = document.getElementById("exportTextButton");
     const toast = document.getElementById("toast");
 
+    const confirmBackdrop = document.getElementById("confirmBackdrop");
+    const confirmTitle = document.getElementById("confirmTitle");
+    const confirmMessage = document.getElementById("confirmMessage");
+    const confirmInput = document.getElementById("confirmInput");
+    const confirmCancelButton = document.getElementById("confirmCancelButton");
+    const confirmOkButton = document.getElementById("confirmOkButton");
+
+    let confirmResolver = null;
+    let confirmMode = "confirm";
+
     loadSettings();
     loadCategories();
     loadPosts();
     syncCategoriesFromPosts();
-    saveCategories();
+    saveCategoriesToBrowser();
+    setupEventHandlers();
     renderAll();
+    updateStorageStatus();
 
-    homeTitleButton.onclick = goHome;
-    newPostButton.onclick = function () {
-      openModal();
-    };
+    function setupEventHandlers() {
+      homeTitleButton.onclick = goHome;
 
-    closeModalButton.onclick = closeModal;
-    cancelButton.onclick = closeModal;
+      newPostButton.onclick = function () {
+        openModal();
+      };
 
-    modalBackdrop.onclick = function (event) {
-      if (event.target === modalBackdrop) {
-        closeModal();
-      }
-    };
+      closeModalButton.onclick = closeModal;
+      cancelButton.onclick = closeModal;
 
-    document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && modalBackdrop.classList.contains("is-open")) {
-        closeModal();
-      }
-    });
+      modalBackdrop.onclick = function (event) {
+        if (event.target === modalBackdrop) {
+          closeModal();
+        }
+      };
 
-    postForm.onsubmit = handleSavePost;
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          if (modalBackdrop.classList.contains("is-open")) {
+            closeModal();
+          }
 
-    sortOrderSelect.onchange = function () {
-      viewState.sortOrder = sortOrderSelect.value === "oldest" ? "oldest" : "newest";
-      viewState.currentPage = 1;
-      saveSettings();
-      renderPosts();
-      renderPagination();
-      renderFilterStatus();
-    };
+          if (confirmBackdrop.classList.contains("is-open")) {
+            closeConfirmDialog(confirmMode === "prompt" ? null : false);
+          }
+        }
+      });
 
-    searchInput.oninput = function () {
-      filterState.search = searchInput.value.trim();
-      viewState.currentPage = 1;
-      renderPosts();
-      renderPagination();
-      renderFilterStatus();
-    };
+      postForm.onsubmit = handleSavePost;
 
-    clearFilterButton.onclick = clearFilters;
+      sortOrderSelect.onchange = function () {
+        viewState.sortOrder = sortOrderSelect.value === "oldest" ? "oldest" : "newest";
+        viewState.currentPage = 1;
+        saveSettings();
+        renderPosts();
+        renderPagination();
+        renderFilterStatus();
+      };
 
-    prevMonthButton.onclick = function () {
-      calendarState.month -= 1;
-      if (calendarState.month < 0) {
-        calendarState.month = 11;
-        calendarState.year -= 1;
-      }
-      renderCalendar();
-    };
+      searchInput.oninput = function () {
+        filterState.search = searchInput.value.trim();
+        viewState.currentPage = 1;
+        renderPosts();
+        renderPagination();
+        renderFilterStatus();
+      };
 
-    nextMonthButton.onclick = function () {
-      calendarState.month += 1;
-      if (calendarState.month > 11) {
-        calendarState.month = 0;
-        calendarState.year += 1;
-      }
-      renderCalendar();
-    };
+      clearFilterButton.onclick = clearFilters;
 
-    addCategoryButton.onclick = addCategory;
+      prevMonthButton.onclick = function () {
+        calendarState.month -= 1;
+        if (calendarState.month < 0) {
+          calendarState.month = 11;
+          calendarState.year -= 1;
+        }
+        renderCalendar();
+      };
 
-    newCategoryInput.addEventListener("keydown", function (event) {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        addCategory();
-      }
-    });
+      nextMonthButton.onclick = function () {
+        calendarState.month += 1;
+        if (calendarState.month > 11) {
+          calendarState.month = 0;
+          calendarState.year += 1;
+        }
+        renderCalendar();
+      };
 
-    exportJsonButton.onclick = exportJson;
+      addCategoryButton.onclick = addCategory;
 
-    importJsonButton.onclick = function () {
-      importFileInput.click();
-    };
+      newCategoryInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          addCategory();
+        }
+      });
 
-    importFileInput.onchange = importJson;
-    exportTextButton.onclick = exportText;
+      openDataFileButton.onclick = openDataFile;
+      saveAsDataFileButton.onclick = saveAsDataFile;
+      saveCurrentFileButton.onclick = saveCurrentDataFileManually;
+
+      exportJsonButton.onclick = exportJson;
+
+      importJsonButton.onclick = function () {
+        importFileInput.click();
+      };
+
+      importFileInput.onchange = importJson;
+      exportTextButton.onclick = exportText;
+
+      confirmCancelButton.onclick = function () {
+        closeConfirmDialog(confirmMode === "prompt" ? null : false);
+      };
+
+      confirmOkButton.onclick = function () {
+        if (confirmMode === "prompt") {
+          closeConfirmDialog(confirmInput.value);
+        } else {
+          closeConfirmDialog(true);
+        }
+      };
+
+      confirmBackdrop.onclick = function (event) {
+        if (event.target === confirmBackdrop) {
+          closeConfirmDialog(confirmMode === "prompt" ? null : false);
+        }
+      };
+
+      confirmInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          closeConfirmDialog(confirmInput.value);
+        }
+      });
+    }
 
     function goHome() {
       filterState.search = "";
@@ -1096,7 +1262,7 @@
       }
     }
 
-    function saveCategories() {
+    function saveCategoriesToBrowser() {
       try {
         localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(categories));
       } catch (error) {
@@ -1128,13 +1294,30 @@
       }
     }
 
-    function savePosts() {
+    function savePostsToBrowser() {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(posts));
       } catch (error) {
         console.error("localStorageへの保存に失敗しました。", error);
-        alert("保存に失敗しました。ブラウザの保存容量が不足している可能性があります。");
+        alert("ブラウザ内保存に失敗しました。保存容量が不足している可能性があります。");
       }
+    }
+
+    function saveAllToBrowser() {
+      savePostsToBrowser();
+      saveCategoriesToBrowser();
+      saveSettings();
+    }
+
+    async function persistDataAfterChange() {
+      saveAllToBrowser();
+
+      if (!dataFileHandle) {
+        updateStorageStatus("ブラウザ内に保存済み");
+        return;
+      }
+
+      await writeCurrentDataToFile({ silent: true });
     }
 
     function syncCategoriesFromPosts() {
@@ -1147,6 +1330,254 @@
         });
 
       categories = normalizeCategories(categories.concat(postCategories));
+    }
+
+    function buildDataPayload() {
+      return {
+        app: "diary-log",
+        version: 3,
+        updatedAt: new Date().toISOString(),
+        settings: {
+          sortOrder: viewState.sortOrder
+        },
+        categories: categories,
+        posts: posts
+      };
+    }
+
+    function extractDataFromPayload(parsed) {
+      let importedPosts = [];
+      let importedCategories = [DEFAULT_CATEGORY];
+      let importedSettings = {};
+
+      if (Array.isArray(parsed)) {
+        importedPosts = parsed;
+      } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.posts)) {
+        importedPosts = parsed.posts;
+
+        if (Array.isArray(parsed.categories)) {
+          importedCategories = parsed.categories;
+        }
+
+        if (parsed.settings && typeof parsed.settings === "object") {
+          importedSettings = parsed.settings;
+        }
+      } else {
+        throw new Error("JSONの形式が正しくありません。");
+      }
+
+      const validPosts = importedPosts.filter(isValidPost).map(normalizePost);
+
+      if (validPosts.length !== importedPosts.length) {
+        throw new Error("一部または全部の投稿データ形式が正しくありません。");
+      }
+
+      return {
+        posts: validPosts,
+        categories: normalizeCategories(importedCategories),
+        settings: importedSettings
+      };
+    }
+
+    function applyDataPayload(data) {
+      posts = data.posts;
+      categories = normalizeCategories(data.categories);
+      syncCategoriesFromPosts();
+
+      if (data.settings && (data.settings.sortOrder === "oldest" || data.settings.sortOrder === "newest")) {
+        viewState.sortOrder = data.settings.sortOrder;
+        sortOrderSelect.value = viewState.sortOrder;
+      }
+
+      viewState.currentPage = 1;
+      clearFiltersWithoutRender();
+      saveAllToBrowser();
+      renderAll();
+    }
+
+    function isFileSystemAccessSupported() {
+      return typeof window.showOpenFilePicker === "function" &&
+        typeof window.showSaveFilePicker === "function" &&
+        window.isSecureContext;
+    }
+
+    async function openDataFile() {
+      if (!isFileSystemAccessSupported()) {
+        alert("このブラウザではローカルファイル保存機能が使えません。ChromeまたはEdgeで、GitHub PagesのURLから開いてください。");
+        return;
+      }
+
+      const ok = await openConfirmDialog(
+        "日記ファイルを開く",
+        "選択したJSONファイルの内容を読み込みます。\n\n現在画面に表示されている内容は、選択したファイルの内容で置き換わります。\n\n続行しますか？",
+        "開く"
+      );
+
+      if (!ok) return;
+
+      try {
+        const handles = await window.showOpenFilePicker({
+          multiple: false,
+          types: [
+            {
+              description: "Diary Log JSON",
+              accept: {
+                "application/json": [".json"]
+              }
+            }
+          ]
+        });
+
+        const handle = handles[0];
+        const file = await handle.getFile();
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const data = extractDataFromPayload(parsed);
+
+        dataFileHandle = handle;
+        dataFileName = handle.name;
+
+        applyDataPayload(data);
+        updateStorageStatus("日記ファイルを読み込みました。");
+        showToast("日記ファイルを開きました。");
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          return;
+        }
+
+        console.error(error);
+        alert("日記ファイルの読み込みに失敗しました。JSON形式を確認してください。");
+        updateStorageStatus("読み込みに失敗しました。");
+      }
+    }
+
+    async function saveAsDataFile() {
+      if (!isFileSystemAccessSupported()) {
+        alert("このブラウザではローカルファイル保存機能が使えません。ChromeまたはEdgeで、GitHub PagesのURLから開いてください。");
+        return;
+      }
+
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: "diary-log-data.json",
+          types: [
+            {
+              description: "Diary Log JSON",
+              accept: {
+                "application/json": [".json"]
+              }
+            }
+          ]
+        });
+
+        dataFileHandle = handle;
+        dataFileName = handle.name;
+
+        await writeCurrentDataToFile({ silent: false });
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          return;
+        }
+
+        console.error(error);
+        alert("名前を付けて保存に失敗しました。");
+        updateStorageStatus("保存に失敗しました。");
+      }
+    }
+
+    async function saveCurrentDataFileManually() {
+      if (!dataFileHandle) {
+        await saveAsDataFile();
+        return;
+      }
+
+      await writeCurrentDataToFile({ silent: false });
+    }
+
+    async function verifyFilePermission(handle, mode) {
+      const options = { mode: mode };
+
+      if (typeof handle.queryPermission === "function") {
+        const queryResult = await handle.queryPermission(options);
+        if (queryResult === "granted") {
+          return true;
+        }
+      }
+
+      if (typeof handle.requestPermission === "function") {
+        const requestResult = await handle.requestPermission(options);
+        return requestResult === "granted";
+      }
+
+      return true;
+    }
+
+    async function writeCurrentDataToFile(options) {
+      if (!dataFileHandle) {
+        updateStorageStatus("ブラウザ内に保存済み");
+        return;
+      }
+
+      if (isWritingFile) return;
+
+      const silent = options && options.silent;
+
+      try {
+        isWritingFile = true;
+        updateStorageStatus("保存中...");
+
+        const hasPermission = await verifyFilePermission(dataFileHandle, "readwrite");
+
+        if (!hasPermission) {
+          updateStorageStatus("ファイル保存の許可がありません。");
+          if (!silent) {
+            alert("ファイル保存の許可がありません。もう一度保存先を選び直してください。");
+          }
+          return;
+        }
+
+        const writable = await dataFileHandle.createWritable();
+        const data = JSON.stringify(buildDataPayload(), null, 2);
+
+        await writable.write(data);
+        await writable.close();
+
+        updateStorageStatus("ファイルに保存済み");
+        if (!silent) {
+          showToast("日記ファイルに保存しました。");
+        }
+      } catch (error) {
+        console.error(error);
+        updateStorageStatus("ファイル保存に失敗しました。ブラウザ内には保存されています。");
+
+        if (!silent) {
+          alert("ファイル保存に失敗しました。ブラウザ内には保存されています。");
+        }
+      } finally {
+        isWritingFile = false;
+      }
+    }
+
+    function updateStorageStatus(message) {
+      if (!isFileSystemAccessSupported()) {
+        fileApiMessage.textContent = "ローカルファイル保存は、この環境では使えない可能性があります。";
+      } else {
+        fileApiMessage.textContent = "";
+      }
+
+      if (dataFileHandle) {
+        storageFileName.textContent = dataFileName || "選択済みファイル";
+      } else {
+        storageFileName.textContent = "ブラウザ内保存";
+      }
+
+      if (message) {
+        storageState.textContent = message;
+      } else if (dataFileHandle) {
+        storageState.textContent = "ファイル選択済み";
+      } else {
+        storageState.textContent = "ブラウザ内に保存済み";
+      }
     }
 
     function openModal(postId) {
@@ -1167,7 +1598,7 @@
         if (!categories.includes(post.category)) {
           categories.push(post.category);
           categories = normalizeCategories(categories);
-          saveCategories();
+          saveCategoriesToBrowser();
           renderCategorySelect();
         }
 
@@ -1194,7 +1625,7 @@
       postForm.reset();
     }
 
-    function handleSavePost(event) {
+    async function handleSavePost(event) {
       event.preventDefault();
 
       const body = bodyInput.value.trim();
@@ -1220,9 +1651,9 @@
         posts[index] = {
           ...posts[index],
           updatedAt: now,
-          title,
-          body,
-          category
+          title: title,
+          body: body,
+          category: category
         };
 
         showToast("投稿を更新しました。");
@@ -1231,9 +1662,9 @@
           id: createId(),
           createdAt: now,
           updatedAt: now,
-          title,
-          body,
-          category
+          title: title,
+          body: body,
+          category: category
         };
 
         posts.unshift(newPost);
@@ -1241,12 +1672,12 @@
         showToast("投稿しました。");
       }
 
-      savePosts();
       closeModal();
       renderAll();
+      await persistDataAfterChange();
     }
 
-    function deletePost(postId) {
+    async function deletePost(postId) {
       const post = posts.find(function (item) {
         return item.id === postId;
       });
@@ -1257,7 +1688,12 @@
       }
 
       const heading = getHeading(post);
-      const ok = confirm("この投稿を削除しますか？\n\n" + heading);
+
+      const ok = await openConfirmDialog(
+        "投稿を削除",
+        "この投稿を削除しますか？\n\n" + heading,
+        "削除"
+      );
 
       if (!ok) return;
 
@@ -1265,13 +1701,13 @@
         return item.id !== postId;
       });
 
-      savePosts();
       adjustCurrentPage();
       renderAll();
+      await persistDataAfterChange();
       showToast("投稿を削除しました。");
     }
 
-    function addCategory() {
+    async function addCategory() {
       const name = sanitizeCategoryName(newCategoryInput.value);
 
       if (!name) {
@@ -1288,11 +1724,11 @@
 
       categories.push(name);
       categories = normalizeCategories(categories);
-      saveCategories();
 
       newCategoryInput.value = "";
       renderCategories();
       renderCategorySelect();
+      await persistDataAfterChange();
       showToast("カテゴリを追加しました。");
     }
 
@@ -1309,13 +1745,19 @@
       renderFilterStatus();
     }
 
-    function renameCategory(oldName) {
+    async function renameCategory(oldName) {
       if (oldName === DEFAULT_CATEGORY) {
         alert("未分類は名称変更できません。");
         return;
       }
 
-      const input = prompt("新しいカテゴリ名を入力してください。", oldName);
+      const input = await openPromptDialog(
+        "カテゴリ名を変更",
+        "新しいカテゴリ名を入力してください。",
+        oldName,
+        "変更"
+      );
+
       if (input === null) return;
 
       const newName = sanitizeCategoryName(input);
@@ -1350,13 +1792,12 @@
         filterState.category = newName;
       }
 
-      saveCategories();
-      savePosts();
       renderAll();
+      await persistDataAfterChange();
       showToast("カテゴリ名を変更しました。");
     }
 
-    function deleteCategory(categoryName) {
+    async function deleteCategory(categoryName) {
       if (categoryName === DEFAULT_CATEGORY) {
         alert("未分類は削除できません。");
         return;
@@ -1366,9 +1807,11 @@
         return post.category === categoryName;
       }).length;
 
-      const ok = confirm(
+      const ok = await openConfirmDialog(
+        "カテゴリを削除",
         "カテゴリ「" + categoryName + "」を削除しますか？\n\n" +
-        "このカテゴリの投稿 " + count + "件は「未分類」に戻ります。"
+        "このカテゴリの投稿 " + count + "件は「未分類」に戻ります。",
+        "削除"
       );
 
       if (!ok) return;
@@ -1391,9 +1834,8 @@
         filterState.category = "";
       }
 
-      saveCategories();
-      savePosts();
       renderAll();
+      await persistDataAfterChange();
       showToast("カテゴリを削除しました。");
     }
 
@@ -1475,6 +1917,7 @@
       renderCategories();
       renderArchives();
       renderFilterStatus();
+      updateStorageStatus();
     }
 
     function renderPosts() {
@@ -1992,36 +2435,34 @@
     }
 
     function clearFilters() {
+      clearFiltersWithoutRender();
+      renderAll();
+    }
+
+    function clearFiltersWithoutRender() {
       filterState.search = "";
       filterState.date = "";
       filterState.category = "";
       filterState.month = "";
       searchInput.value = "";
       viewState.currentPage = 1;
-      renderAll();
     }
 
     function exportJson() {
-      const backup = {
-        app: "diary-log",
-        version: 2,
-        exportedAt: new Date().toISOString(),
-        categories,
-        posts
-      };
-
-      const data = JSON.stringify(backup, null, 2);
+      const data = JSON.stringify(buildDataPayload(), null, 2);
       const filename = "diary-log-backup-" + toDateKey(new Date()) + ".json";
       downloadFile(filename, data, "application/json");
       showToast("JSONを書き出しました。");
     }
 
-    function importJson(event) {
+    async function importJson(event) {
       const file = event.target.files[0];
       if (!file) return;
 
-      const ok = confirm(
-        "JSONをインポートします。\n\n現在の投稿データとカテゴリは、インポートした内容で置き換えられます。\n事前にJSONエクスポートしておくと安全です。\n\n続行しますか？"
+      const ok = await openConfirmDialog(
+        "JSONインポート",
+        "JSONをインポートします。\n\n現在の投稿データとカテゴリは、インポートした内容で置き換えられます。\n\n続行しますか？",
+        "インポート"
       );
 
       if (!ok) {
@@ -2031,43 +2472,13 @@
 
       const reader = new FileReader();
 
-      reader.onload = function () {
+      reader.onload = async function () {
         try {
           const parsed = JSON.parse(String(reader.result));
+          const data = extractDataFromPayload(parsed);
 
-          let importedPosts = [];
-          let importedCategories = [DEFAULT_CATEGORY];
-
-          if (Array.isArray(parsed)) {
-            importedPosts = parsed;
-          } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.posts)) {
-            importedPosts = parsed.posts;
-
-            if (Array.isArray(parsed.categories)) {
-              importedCategories = parsed.categories;
-            }
-          } else {
-            alert("インポートできません。JSONの形式が正しくありません。");
-            return;
-          }
-
-          const validPosts = importedPosts.filter(isValidPost).map(normalizePost);
-
-          if (validPosts.length !== importedPosts.length) {
-            const proceed = confirm(
-              "一部のデータ形式が正しくありません。\n\n有効な投稿のみインポートします。\n有効件数: " + validPosts.length + "件\n元データ件数: " + importedPosts.length + "件\n\n続行しますか？"
-            );
-
-            if (!proceed) return;
-          }
-
-          posts = validPosts;
-          categories = normalizeCategories(importedCategories);
-          syncCategoriesFromPosts();
-
-          savePosts();
-          saveCategories();
-          clearFilters();
+          applyDataPayload(data);
+          await persistDataAfterChange();
           showToast("JSONをインポートしました。");
         } catch (error) {
           console.error(error);
@@ -2163,8 +2574,55 @@
         updatedAt: post.updatedAt,
         title: post.title || "",
         body: post.body || "",
-        category
+        category: category
       };
+    }
+
+    function openConfirmDialog(title, message, okText) {
+      confirmMode = "confirm";
+
+      confirmTitle.textContent = title;
+      confirmMessage.textContent = message;
+      confirmInput.style.display = "none";
+      confirmInput.value = "";
+      confirmOkButton.textContent = okText || "OK";
+      confirmBackdrop.classList.add("is-open");
+      confirmBackdrop.setAttribute("aria-hidden", "false");
+
+      return new Promise(function (resolve) {
+        confirmResolver = resolve;
+      });
+    }
+
+    function openPromptDialog(title, message, initialValue, okText) {
+      confirmMode = "prompt";
+
+      confirmTitle.textContent = title;
+      confirmMessage.textContent = message;
+      confirmInput.style.display = "block";
+      confirmInput.value = initialValue || "";
+      confirmOkButton.textContent = okText || "OK";
+      confirmBackdrop.classList.add("is-open");
+      confirmBackdrop.setAttribute("aria-hidden", "false");
+
+      setTimeout(function () {
+        confirmInput.focus();
+        confirmInput.select();
+      }, 0);
+
+      return new Promise(function (resolve) {
+        confirmResolver = resolve;
+      });
+    }
+
+    function closeConfirmDialog(result) {
+      confirmBackdrop.classList.remove("is-open");
+      confirmBackdrop.setAttribute("aria-hidden", "true");
+
+      if (confirmResolver) {
+        confirmResolver(result);
+        confirmResolver = null;
+      }
     }
 
     function getJapaneseHolidays(year) {
