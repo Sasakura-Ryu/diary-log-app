@@ -1525,7 +1525,7 @@
 
         const preview = document.createElement("p");
         preview.className = "post-preview";
-        preview.textContent = createPreview(post.body, 220);
+        preview.textContent = post.body || "";
 
         const actions = document.createElement("div");
         actions.className = "post-actions";
